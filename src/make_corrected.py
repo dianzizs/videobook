@@ -1,8 +1,8 @@
 """由 transcript.json 生成 AI 修正版字幕对照稿 transcript.corrected.txt。
 
 原则（用户约定）：逐段保留讲师原始字词与顺序，不合并、不改写为书面语；
-仅做两类修改——(1) ASR 错词替换（MAP）；(2) 口癖清理（纯语气词整段删除、
-句尾语气词剥离、单字口吃叠词折叠）。MAP 可按视频扩充。
+仅做两类修改——(1) ASR 错词替换（COMMON_MAP + VIDEO_MAP）；(2) 口癖清理（纯语气词整段删除、
+句尾语气词剥离、单字口吃叠词折叠）。专用映射按 video_id 扩充。
 
 用法: python make_corrected.py <video_id> [<video_id> ...] | --all
 """
@@ -15,7 +15,7 @@ import sys
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ASR 错词 -> 正确词（按长度降序应用，避免子串误伤）
-MAP = {
+COMMON_MAP = {
     "深圳市软件工程": "生成式软件工程",
     "英拉SEMBLY": "内联汇编",
     "英外SAMBLY": "内联汇编",
@@ -82,7 +82,10 @@ MAP = {
     "VERIFI": "verifier",
     "WIFI": "verifier",
     "linux": "Linux",
-    # ── BV1kybV6DE47 软件仓库管理（本地 large-v3 ASR 稿）──
+}
+
+# ── BV1kybV6DE47 软件仓库管理（本地 large-v3 ASR 稿）──
+_REPO_MANAGEMENT_MAP = {
     "GP16": "GPT-6",
     "GP6": "GPT-6",
     "GP5.6": "GPT-5.6",
@@ -166,7 +169,10 @@ MAP = {
     "agent.cmd": "AGENTS.md",
     "考案神": "convention",
     "超系统课": "计算机系统课",
-    # ── BV1Q6en6NEUo 软件仓库管理(2)（B 站 ai-zh 字幕）──
+}
+
+# ── BV1Q6en6NEUo 软件仓库管理(2)（B 站 ai-zh 字幕）──
+_REPO_MANAGEMENT_2_MAP = {
     "web code": "vibe code",
     "A证": "agent", "A政": "agent", "A震": "agent",
     "交流坑": "焦油坑",
@@ -225,7 +231,11 @@ MAP = {
     "da base": "database",
     "VTREE": "worktrees", "GDIR": "gitdir:",
 }
-_MAP_ITEMS = sorted(MAP.items(), key=lambda kv: -len(kv[0]))
+
+VIDEO_MAP = {
+    "BV1kybV6DE47": _REPO_MANAGEMENT_MAP,
+    "BV1Q6en6NEUo": _REPO_MANAGEMENT_2_MAP,
+}
 
 # 整段即为口癖 -> 删除该段
 FILLER_ONLY = {"呃", "嗯", "啊", "哦", "啧", "哎", "哎呀", "哈哈", "哈哈哈", "嘿嘿",
@@ -239,8 +249,10 @@ TAIL_FILLER = re.compile(r"(?:对吧|对不对|是吧|是不是|嘛|呀|哦|呃|
 STUTTER = re.compile(r"(我|你|他|它|就|是|有|去|来|啊|呃|嗯|对|但|那|这|也|都|还|又|再|很|太|会|要|想|说|看|做|搞|弄|写|读|问|答|学|教|玩|用|给|把|被|让|使|等)\1+")
 
 
-def correct(text: str):
-    for old, new in _MAP_ITEMS:
+def correct(text: str, video_id: str | None = None):
+    # 专用规则覆盖同名通用规则；合并后统一按长词优先，避免子串误伤。
+    mapping = {**COMMON_MAP, **VIDEO_MAP.get(video_id, {})}
+    for old, new in sorted(mapping.items(), key=lambda kv: -len(kv[0])):
         if old in text:
             text = text.replace(old, new)
     text = text.replace("呃", "").replace("嗯", "")
@@ -258,14 +270,15 @@ def main():
                             if os.path.isfile(os.path.join(BASE, "output", d, "transcript.json"))]
     for vid in ids:
         src = os.path.join(BASE, "output", vid, "transcript.json")
-        segs = json.load(open(src, encoding="utf-8"))["segments"]
+        with open(src, encoding="utf-8") as f:
+            segs = json.load(f)["segments"]
         out_lines, dropped, fixed = [], 0, 0
         for seg in segs:
             raw = seg["text"].strip()
             if raw in FILLER_ONLY:
                 dropped += 1
                 continue
-            txt = correct(raw)
+            txt = correct(raw, vid)
             if txt != raw:
                 fixed += 1
             if not txt:
